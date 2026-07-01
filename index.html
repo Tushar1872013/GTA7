@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#0a0e1a" />
+  <title>Open City Bike 3D — Phase 1</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0e1a; font-family: 'Segoe UI', Roboto, sans-serif; color: #fff; user-select: none; }
+    #app { position: fixed; inset: 0; z-index: 1; }
+    #app canvas { display: block; width: 100% !important; height: 100% !important; z-index: 1; }
+
+    /* Loading screen */
+    #loader {
+      position: fixed; inset: 0; z-index: 100;
+      background: radial-gradient(ellipse at center, #1a2540 0%, #050810 100%);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      transition: opacity 0.8s ease;
+    }
+    #loader.hidden { opacity: 0; pointer-events: none; }
+    #loader h1 { font-size: 32px; font-weight: 700; letter-spacing: 2px; margin-bottom: 8px; background: linear-gradient(90deg, #4fc3f7, #ffd54f); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+    #loader p { font-size: 13px; color: #7a8db0; margin-bottom: 28px; letter-spacing: 1px; }
+    .spinner { width: 48px; height: 48px; border: 3px solid rgba(255,255,255,0.1); border-top-color: #4fc3f7; border-radius: 50%; animation: spin 0.9s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* HUD */
+    #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+    #speedo {
+      position: absolute; right: 24px; bottom: 24px;
+      width: 150px; height: 150px; border-radius: 50%;
+      background: radial-gradient(circle, rgba(10,14,26,0.85), rgba(10,14,26,0.6));
+      border: 2px solid rgba(79,195,247,0.4);
+      box-shadow: 0 0 30px rgba(79,195,247,0.2), inset 0 0 20px rgba(0,0,0,0.6);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      backdrop-filter: blur(8px);
+    }
+    #speedo .val { font-size: 42px; font-weight: 800; color: #4fc3f7; line-height: 1; text-shadow: 0 0 12px rgba(79,195,247,0.6); }
+    #speedo .unit { font-size: 12px; color: #7a8db0; letter-spacing: 2px; margin-top: 4px; }
+    #speedo .gear { font-size: 11px; color: #ffd54f; margin-top: 6px; letter-spacing: 1px; }
+
+    #minimap {
+      position: absolute; left: 24px; top: 24px;
+      width: 160px; height: 160px; border-radius: 12px;
+      background: rgba(10,14,26,0.7); border: 1px solid rgba(79,195,247,0.3);
+      overflow: hidden; backdrop-filter: blur(6px);
+    }
+    #minimap canvas { width: 100%; height: 100%; }
+
+    #info {
+      position: absolute; left: 50%; top: 20px; transform: translateX(-50%);
+      background: rgba(10,14,26,0.75); border: 1px solid rgba(255,255,255,0.1);
+      padding: 10px 20px; border-radius: 24px; font-size: 13px; color: #cfd8e8;
+      backdrop-filter: blur(8px); white-space: nowrap;
+    }
+    #info b { color: #ffd54f; }
+
+    #fps {
+      position: absolute; right: 24px; top: 24px;
+      background: rgba(10,14,26,0.75); border: 1px solid rgba(255,255,255,0.1);
+      padding: 6px 12px; border-radius: 8px; font-size: 12px; font-family: monospace;
+      color: #4fc3f7; backdrop-filter: blur(8px);
+    }
+
+    /* Mobile controls */
+    .touch-btn {
+      position: absolute; pointer-events: auto;
+      width: 64px; height: 64px; border-radius: 50%;
+      background: rgba(79,195,247,0.18); border: 2px solid rgba(79,195,247,0.5);
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 22px; font-weight: 700;
+      backdrop-filter: blur(6px); user-select: none;
+      transition: transform 0.08s, background 0.1s;
+    }
+    .touch-btn:active, .touch-btn.active { background: rgba(79,195,247,0.45); transform: scale(0.92); }
+
+    #btn-enter { left: 24px; bottom: 110px; width: 80px; height: 80px; font-size: 12px; }
+    #btn-brake { right: 200px; bottom: 50px; background: rgba(255,90,90,0.2); border-color: rgba(255,90,90,0.6); }
+    #btn-gas  { right: 110px; bottom: 90px; background: rgba(120,220,120,0.2); border-color: rgba(120,220,120,0.6); }
+
+    /* joystick */
+    #joystick {
+      position: absolute; left: 80px; bottom: 110px;
+      width: 130px; height: 130px; border-radius: 50%;
+      background: rgba(255,255,255,0.06); border: 2px solid rgba(255,255,255,0.15);
+      pointer-events: auto;
+    }
+    #joystick .stick {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: 56px; height: 56px; border-radius: 50%;
+      background: rgba(79,195,247,0.55); border: 2px solid rgba(255,255,255,0.4);
+    }
+
+    .hide-mobile { display: none; }
+    @media (pointer: coarse), (max-width: 768px) {
+      .hide-mobile { display: flex; }
+    }
+
+    .help-panel {
+      position: absolute; left: 24px; bottom: 24px; max-width: 280px;
+      background: rgba(10,14,26,0.75); border: 1px solid rgba(255,255,255,0.1);
+      padding: 12px 14px; border-radius: 10px; font-size: 12px; color: #b0bcd4; line-height: 1.7;
+      backdrop-filter: blur(8px);
+    }
+    .help-panel b { color: #ffd54f; }
+    .help-panel .key {
+      display: inline-block; min-width: 22px; padding: 1px 6px; margin: 0 2px;
+      background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 4px; font-family: monospace; font-size: 11px; color: #fff; text-align: center;
+    }
+    @media (pointer: coarse), (max-width: 768px) {
+      .help-panel { display: none; }
+    }
+
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateY(-10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div id="hud" style="display:none;">
+    <div id="info">Press <b>F</b> to enter bike · <b>WASD</b> to move</div>
+    <div id="fps">FPS: --</div>
+    <div id="minimap"><canvas id="minimap-canvas" width="160" height="160"></canvas></div>
+    <div id="speedo">
+      <div class="val" id="speed-val">0</div>
+      <div class="unit">KM/H</div>
+      <div class="gear" id="gear-val">NEUTRAL</div>
+    </div>
+
+    <div class="help-panel">
+      <b>Controls</b><br/>
+      <span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> Move / Drive<br/>
+      <span class="key">Space</span> Brake · <span class="key">Shift</span> Boost<br/>
+      <span class="key">F</span> Enter/Exit · <span class="key">V</span> Vehicle type<br/>
+      <span class="key">B</span> Variant · <span class="key">C</span> Camera<br/>
+      <span class="key">N</span> Time · <span class="key">R</span> Reset<br/>
+      <span class="key">M</span> Mission · <span class="key">K</span> Start race<br/>
+      <span class="key">P</span> Phone · <span class="key">G</span> Garage<br/>
+      <span class="key">J</span> Customize · <span class="key">O</span> Multiplayer<br/>
+      <span class="key">H</span> Buy house · <span class="key">U</span> Buy business<br/>
+      <span class="key">T</span> Voice chat (hold)<br/>
+      <br/>
+      <b>Goal</b><br/>
+      Drive, race, earn money, buy properties!
+    </div>
+
+    <!-- Mobile controls -->
+    <div id="joystick" class="hide-mobile"><div class="stick" id="stick"></div></div>
+    <div id="btn-enter" class="touch-btn hide-mobile">ENTER</div>
+    <div id="btn-gas"   class="touch-btn hide-mobile">▲</div>
+    <div id="btn-brake" class="touch-btn hide-mobile">▼</div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
