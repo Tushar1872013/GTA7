@@ -40,6 +40,13 @@ export class World {
     this.stuntRamps = [];          // { mesh, body, position, forward }
     this.missionPoints = [];       // { position, name }
     this.poiMarkers = [];          // points of interest (for minimap)
+    this.windowMaterials = [0.6, 0.8, 1.0, 1.2, 1.4].map((intensity) => new THREE.MeshStandardMaterial({
+      color: 0x1a1a2e,
+      emissive: 0xffd97a,
+      emissiveIntensity: intensity,
+      roughness: 0.2,
+      metalness: 0.8
+    }));
     this.root = new THREE.Group();
     this.root.name = 'World';
     scene.add(this.root);
@@ -79,26 +86,19 @@ export class World {
 
     // Add window interior lights (emissive) for night time
     if (options.windows !== false && h > 10) {
-      this._addBuildingWindows(x, z, w, h, d, options.rotation);
+      this._addBuildingWindows(mesh, w, h, d);
     }
 
     // Add roof equipment (AC units, vents)
     if (h > 15 && Math.random() < 0.7) {
-      this._addRoofDetails(x, z, w, h, d);
+      this._addRoofDetails(mesh, w, h, d);
     }
 
     return mesh;
   }
 
-  _addBuildingWindows(x, z, w, h, d, rotation) {
+  _addBuildingWindows(mesh, w, h, d) {
     // Small emissive panels on building faces (visible at night)
-    const winMat = new THREE.MeshStandardMaterial({
-      color: 0x1a1a2e,
-      emissive: 0xffd97a,
-      emissiveIntensity: 0,
-      roughness: 0.2,
-      metalness: 0.8
-    });
     const winCount = Math.min(12, Math.floor(h / 8));
     for (let i = 0; i < winCount; i++) {
       const wy = (i + 0.5) * (h / winCount);
@@ -112,30 +112,28 @@ export class World {
         if (Math.random() < 0.4) { // 40% chance window is lit
           const win = new THREE.Mesh(
             new THREE.PlaneGeometry(s.sw, s.sh),
-            winMat.clone()
+            this.windowMaterials[Math.floor(Math.random() * this.windowMaterials.length)]
           );
-          win.material.emissiveIntensity = 0.6 + Math.random() * 0.8;
-          win.position.set(x + s.ox, wy, z + s.oz);
-          win.rotation.y = s.rot + (rotation || 0);
-          this.root.add(win);
-          this.buildings.push(win); // for night visibility
+          win.position.set(s.ox, wy - h / 2, s.oz);
+          win.rotation.y = s.rot;
+          mesh.add(win);
         }
       }
     }
   }
 
-  _addRoofDetails(x, z, w, h, d) {
+  _addRoofDetails(mesh, w, h, d) {
     const detailMat = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.7, metalness: 0.5 });
     // AC unit
     const ac = new THREE.Mesh(new THREE.BoxGeometry(w * 0.2, 1, d * 0.2), detailMat);
-    ac.position.set(x + (Math.random() - 0.5) * w * 0.5, h + 0.5, z + (Math.random() - 0.5) * d * 0.5);
+    ac.position.set((Math.random() - 0.5) * w * 0.5, h / 2 + 0.5, (Math.random() - 0.5) * d * 0.5);
     ac.castShadow = true;
-    this.root.add(ac);
+    mesh.add(ac);
     // Vent pipe
     if (Math.random() < 0.5) {
       const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 2, 8), detailMat);
-      pipe.position.set(x + (Math.random() - 0.5) * w * 0.3, h + 1, z + (Math.random() - 0.5) * d * 0.3);
-      this.root.add(pipe);
+      pipe.position.set((Math.random() - 0.5) * w * 0.3, h / 2 + 1, (Math.random() - 0.5) * d * 0.3);
+      mesh.add(pipe);
     }
   }
 

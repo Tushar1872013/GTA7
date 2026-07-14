@@ -17,7 +17,6 @@ import { ParticleSystem } from '../environment/ParticleSystem.js';
 import { ReflectionManager } from '../environment/ReflectionManager.js';
 import { World } from '../world/World.js';
 import { RoadSystem } from '../world/RoadSystem.js';
-import { BuildingGenerator } from '../world/BuildingGenerator.js';
 import { DistrictDecorations } from '../world/DistrictDecorations.js';
 import { TrafficSystem } from '../traffic/TrafficSystem.js';
 import { Player } from '../player/Player.js';
@@ -94,8 +93,7 @@ export class Game {
     // === World Props (street lamps, trees, benches, etc.) ===
     this.worldProps = new WorldProps({ scene: this.scene, world: this.world });
 
-    // === Building Generator (for future modular buildings) ===
-    this.buildingGen = new BuildingGenerator();
+    // BuildingGenerator is unused by World.js; avoid instantiating its empty night-light updater.
 
     // === District Decorations (Tokyo neon, Dubai luxury, world density) ===
     this.districtDeco = new DistrictDecorations({ scene: this.scene, world: this.world });
@@ -423,9 +421,6 @@ export class Game {
     this.roadSystem.update(dt, this.environment.isNight);
     this.districtDeco.update(dt, this.environment.isNight ? 1 : 0);
     this.reflectionMgr.update(dt);
-    // Update building night lights
-    const nightFactor = this.environment.isNight ? 1 : Math.max(0, -Math.sin(this.environment.timeOfDay * Math.PI * 2));
-    this.buildingGen.updateNightLights(nightFactor);
     this.cameraRig.update(dt);
     this.distanceCuller.update(dt);
     this.lodManager.update(dt);

@@ -133,6 +133,7 @@ export class Renderer {
     this.quality = level;
     const dpr = window.devicePixelRatio || 1;
 
+    // SSAO is intentionally off for low/medium; only high/ultra enable the pass.
     if (level === 'low') {
       this.renderer.setPixelRatio(Math.min(dpr, 0.75));
       this.renderer.shadowMap.enabled = false;
