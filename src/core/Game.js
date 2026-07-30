@@ -32,6 +32,7 @@ import { MissionSystem } from '../systems/MissionSystem.js';
 import { DistanceCuller } from '../systems/DistanceCuller.js';
 import { LODManager } from '../systems/LODManager.js';
 import { DistrictStreamer } from '../systems/DistrictStreamer.js';
+import { PhysicsWorkerClient } from '../physics/PhysicsWorkerClient.js';
 import { CharacterCustomizer } from '../systems/CharacterCustomizer.js';
 import { HousesSystem } from '../systems/HousesSystem.js';
 import { BusinessesSystem } from '../systems/BusinessesSystem.js';
@@ -63,6 +64,50 @@ export class Game {
     return 'high';
   }
 
+  /**
+   * Phase D5 — Initialize the physics worker and mirror the world's static
+   * colliders into it. Called async from init(); failures are non-fatal
+   * (the game continues with the main-thread PhysicsWorld only).
+   */
+  async _initPhysicsWorker() {
+    await this.physicsWorker.init({
+      gravity: { x: 0, y: -22, z: 0 },
+      fixedStep: 1 / 60,
+      allowSleep: true
+    });
+    await this.physicsWorker.addGround(3000);
+    // Note: world box colliders are mirrored AFTER the World is built
+    // (see _mirrorWorldCollidersToWorker, called at the end of init()).
+  }
+
+  /**
+   * Phase D5 — Copy all the world's static box colliders into the physics
+   * worker so dynamic bodies will collide with buildings correctly when
+   * they're added in the future.
+   */
+  async _mirrorWorldCollidersToWorker() {
+    if (!this.physicsWorker || !this.physicsWorker.isReady) return;
+    if (!this.world || !this.world.colliders) return;
+    // The world.colliders array contains CANNON.Body instances with .position
+    // and .shapes[0] (Box with .halfExtents). Extract and mirror each.
+    for (const body of this.world.colliders) {
+      const shape = body.shapes && body.shapes[0];
+      if (!shape || !shape.halfExtents) continue;
+      try {
+        await this.physicsWorker.addBoxCollider({
+          position: { x: body.position.x, y: body.position.y, z: body.position.z },
+          halfExtents: { x: shape.halfExtents.x, y: shape.halfExtents.y, z: shape.halfExtents.z },
+          rotation: body.quaternion
+            ? { x: body.quaternion.x, y: body.quaternion.y, z: body.quaternion.z, w: body.quaternion.w }
+            : null
+        });
+      } catch (e) {
+        // Non-fatal — the worker is best-effort infrastructure.
+      }
+    }
+    console.log('[Game] Mirrored world colliders into physics worker');
+  }
+
   async init() {
     // === Three core ===
     this.scene = new THREE.Scene();
@@ -77,6 +122,24 @@ export class Game {
     // === Physics ===
     this.physics = new PhysicsWorld();
     this.physics.addGround(3000);
+
+    // === Phase D5 — Physics worker (off-thread dynamic body simulation) ===
+    // Initialized in parallel with the main-thread PhysicsWorld. The worker
+    // owns its OWN CANNON.World for dynamic bodies; the main thread keeps
+    // the existing PhysicsWorld for kinematic bodies (player, vehicles,
+    // traffic) which are written to directly each frame.
+    //
+    // Today there are no dynamic bodies, so the worker is purely
+    // infrastructure — ready for future ragdolls/debris/props to land
+    // off-thread without further main-thread changes.
+    //
+    // We mirror all the world's static box colliders into the worker so
+    // dynamic bodies will collide with buildings correctly when added.
+    this.physicsWorker = new PhysicsWorkerClient();
+    this._initPhysicsWorker().catch((err) => {
+      console.warn('[Game] Physics worker init failed (continuing without):', err?.message || err);
+      this.physicsWorker = null;
+    });
 
     // === Environment ===
     this.environment = new Environment({ scene: this.scene, renderer: this.renderer.renderer });
@@ -222,6 +285,11 @@ export class Game {
 
     // === Post-processing: wire scene + camera to composer ===
     this.renderer.setSceneCamera(this.scene, this.camera);
+
+    // === Phase D5 — Mirror world colliders into the physics worker ===
+    // (Fire-and-forget; runs async after init returns. If the worker isn't
+    // ready yet — its init is also async — the call is a no-op.)
+    this._mirrorWorldCollidersToWorker().catch(() => { /* non-fatal */ });
 
     // === Loop ===
     this._running = true;

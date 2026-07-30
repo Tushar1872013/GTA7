@@ -13,9 +13,20 @@
  *   - Speed breakers (in residential)
  *   - Traffic signal poles
  *
- * Uses InstancedMesh for repeated elements (markings, curbs).
+ * Phase D3 — Static geometry merging:
+ *   - Road networks can have 50+ segments, each spawning ~10 dashed yellow
+ *     center marks + up to 20 dashed white lane lines. That's hundreds of
+ *     individual Mesh objects, each its own draw call, all sharing the same
+ *     material.
+ *   - Now: dashes are buffered during buildFromSegments() into per-type
+ *     geometry arrays, then flushed ONCE at the end via
+ *     BufferGeometryUtils.mergeGeometries(). One draw call per material
+ *     instead of hundreds.
+ *   - Asphalt roads and curbs already share materials per road-width, so
+ *     they're not the bottleneck — the markings are.
  */
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { getAsphaltTexture } from './PBRTextures.js';
 
 export class RoadSystem {
@@ -39,12 +50,75 @@ export class RoadSystem {
     this._sidewalkMat = new THREE.MeshStandardMaterial({ color: 0x9a9a9a, roughness: 0.85 });
 
     this.trafficSignals = []; // for animation
+
+    // Phase D3 — Buffers for static markings that will be merged at the end.
+    // Each entry is an array of BufferGeometry instances (already transformed
+    // to its world position via .applyMatrix4) that share the same material.
+    this._dashGeos = [];        // yellow center dashes
+    this._laneLineGeos = [];    // white lane divider dashes
+    this._crosswalkGeos = [];   // white crosswalk stripes
+    // Shared base geometries — cloned per use so transforms don't pollute the shared copy.
+    this._dashBaseGeo = new THREE.PlaneGeometry(3, 0.25);
+    this._dashBaseGeo.rotateX(-Math.PI / 2);
+    this._laneLineBaseGeo = new THREE.PlaneGeometry(2, 0.2);
+    this._laneLineBaseGeo.rotateX(-Math.PI / 2);
+    this._crosswalkBaseGeo = new THREE.PlaneGeometry(0.4, 0.8);
+    this._crosswalkBaseGeo.rotateX(-Math.PI / 2);
   }
 
   buildFromSegments(segments) {
     for (const seg of segments) {
       this._buildRoad(seg);
     }
+    // Phase D3 — Flush all buffered static markings as one merged mesh per type.
+    this._flushMergedMarkings();
+  }
+
+  /**
+   * Phase D3 — Convert all buffered geometries into a single merged Mesh per
+   * material. One draw call per material instead of one per dash.
+   */
+  _flushMergedMarkings() {
+    if (this._dashGeos.length) {
+      const merged = mergeGeometries(this._dashGeos, false);
+      const mesh = new THREE.Mesh(merged, this._yellowMarkingMat);
+      mesh.renderOrder = 1;
+      this.root.add(mesh);
+      // Dispose the per-dash clones — only the merged geometry is needed now.
+      for (const g of this._dashGeos) g.dispose();
+      this._dashGeos = [];
+    }
+    if (this._laneLineGeos.length) {
+      const merged = mergeGeometries(this._laneLineGeos, false);
+      const mesh = new THREE.Mesh(merged, this._markingMat);
+      mesh.renderOrder = 1;
+      this.root.add(mesh);
+      for (const g of this._laneLineGeos) g.dispose();
+      this._laneLineGeos = [];
+    }
+    if (this._crosswalkGeos.length) {
+      const merged = mergeGeometries(this._crosswalkGeos, false);
+      const mesh = new THREE.Mesh(merged, this._markingMat);
+      mesh.renderOrder = 1;
+      this.root.add(mesh);
+      for (const g of this._crosswalkGeos) g.dispose();
+      this._crosswalkGeos = [];
+    }
+  }
+
+  /**
+   * Phase D3 — Helper: clone a base geometry, apply a world transform (position
+   * + Y rotation), and push it into a buffer for later merging.
+   * Using applyMatrix4 with a composed Matrix4 avoids needing to use the
+   * mesh.translate/rotate API (which doesn't exist on BufferGeometry).
+   */
+  _bufferMarking(buffer, baseGeo, x, y, z, rotY) {
+    const g = baseGeo.clone();
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rotY);
+    m.compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(1, 1, 1));
+    g.applyMatrix4(m);
+    buffer.push(g);
   }
 
   _buildRoad(seg) {
@@ -67,24 +141,18 @@ export class RoadSystem {
     road.receiveShadow = true;
     this.root.add(road);
 
-    // === Center line (dashed yellow) ===
+    // === Center line (dashed yellow) — buffered for merge ===
     const dashCount = Math.floor(len / 6);
-    const dashGeo = new THREE.PlaneGeometry(3, 0.25);
-    dashGeo.rotateX(-Math.PI / 2);
     for (let i = 0; i < dashCount; i++) {
       const t = (i + 0.5) / dashCount;
       const x = seg.a.x + dx * t;
       const z = seg.a.z + dz * t;
-      const dash = new THREE.Mesh(dashGeo, this._yellowMarkingMat);
-      dash.position.set(x, 0.03, z);
-      dash.rotation.y = -angle;
-      this.root.add(dash);
+      // rotY is -angle (matches the original road.rotation.y = -angle)
+      this._bufferMarking(this._dashGeos, this._dashBaseGeo, x, 0.03, z, -angle);
     }
 
-    // === Lane divider (dashed white) — for wider roads ===
+    // === Lane divider (dashed white) — for wider roads, buffered for merge ===
     if (width >= 12) {
-      const laneGeo = new THREE.PlaneGeometry(2, 0.2);
-      laneGeo.rotateX(-Math.PI / 2);
       const perpX = -dz / len;
       const perpZ = dx / len;
       for (let i = 0; i < dashCount; i++) {
@@ -92,15 +160,11 @@ export class RoadSystem {
         const baseX = seg.a.x + dx * t;
         const baseZ = seg.a.z + dz * t;
         // Left lane line
-        const ll = new THREE.Mesh(laneGeo, this._markingMat);
-        ll.position.set(baseX + perpX * width * 0.25, 0.03, baseZ + perpZ * width * 0.25);
-        ll.rotation.y = -angle;
-        this.root.add(ll);
+        this._bufferMarking(this._laneLineGeos, this._laneLineBaseGeo,
+          baseX + perpX * width * 0.25, 0.03, baseZ + perpZ * width * 0.25, -angle);
         // Right lane line
-        const rl = new THREE.Mesh(laneGeo, this._markingMat);
-        rl.position.set(baseX - perpX * width * 0.25, 0.03, baseZ - perpZ * width * 0.25);
-        rl.rotation.y = -angle;
-        this.root.add(rl);
+        this._bufferMarking(this._laneLineGeos, this._laneLineBaseGeo,
+          baseX - perpX * width * 0.25, 0.03, baseZ - perpZ * width * 0.25, -angle);
       }
     }
 
@@ -208,16 +272,31 @@ export class RoadSystem {
     const perpX = -(b.z - a.z) / a.distanceTo(b);
     const perpZ = (b.x - a.x) / a.distanceTo(b);
     const stripeCount = 8;
-    const stripeGeo = new THREE.PlaneGeometry(0.4, width * 0.8);
-    stripeGeo.rotateX(-Math.PI / 2);
+    // Phase D3 — Crosswalk stripes are added OUTSIDE buildFromSegments() (called
+    // by external code), so we cannot rely on the build-time buffer+flush flow.
+    // Instead: build per-stripe geometries into a temp array, merge immediately,
+    // and add ONE merged mesh to the root. Still saves stripeCount-1 draw calls
+    // per crosswalk vs the old one-Mesh-per-stripe approach.
+    const stripeGeos = [];
     for (let i = 0; i < stripeCount; i++) {
       const t = (i + 0.5) / stripeCount;
       const x = a.x + (b.x - a.x) * 0.05 + perpX * width * (t - 0.5) * 1.2;
       const z = a.z + (b.z - a.z) * 0.05 + perpZ * width * (t - 0.5) * 1.2;
-      const stripe = new THREE.Mesh(stripeGeo, this._markingMat);
-      stripe.position.set(x, 0.03, z);
-      stripe.rotation.y = -angle + Math.PI / 2;
-      this.root.add(stripe);
+      // Stripe geometry uses width*0.8 in Z direction (matches original)
+      const geo = new THREE.PlaneGeometry(0.4, width * 0.8);
+      geo.rotateX(-Math.PI / 2);
+      const m = new THREE.Matrix4();
+      const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -angle + Math.PI / 2);
+      m.compose(new THREE.Vector3(x, 0.03, z), q, new THREE.Vector3(1, 1, 1));
+      geo.applyMatrix4(m);
+      stripeGeos.push(geo);
+    }
+    if (stripeGeos.length) {
+      const merged = mergeGeometries(stripeGeos, false);
+      const mesh = new THREE.Mesh(merged, this._markingMat);
+      mesh.renderOrder = 1;
+      this.root.add(mesh);
+      for (const g of stripeGeos) g.dispose();
     }
   }
 

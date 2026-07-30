@@ -7,10 +7,84 @@
  *   - Concrete: color + roughness
  *
  * Uses canvas to draw textures, then wraps in THREE.CanvasTexture.
+ *
+ * Phase D4 — KTX2 opportunistic upgrade:
+ *   Each getter returns the canvas texture SYNCHRONOUSLY (preserving the
+ *   existing API — world build is sync and can't await). The getter also
+ *   kicks off an async KTX2 load in the background; when the compressed
+ *   texture arrives, it SWAPS the image/mipmaps of the existing texture
+ *   object in place. Materials referencing the texture pick up the
+ *   compressed version automatically on the next render because we set
+ *   .needsUpdate = true.
+ *
+ *   This delivers the GPU memory win the masterplan promises (70% smaller
+ *   VRAM footprint on mid-range Android) WITHOUT requiring any caller to
+ *   become async, and WITHOUT leaving a fallback-only path that never
+ *   actually upgrades.
+ *
+ *   If no .ktx2 file is present (or KTX2 is unsupported), the canvas
+ *   texture stays in place permanently — no behavior change from before.
  */
 import * as THREE from 'three';
+import { loadKTX2 } from '../player/KTX2TextureLoader.js';
 
 let _cache = {};
+
+/**
+ * Phase D4 — Async texture swap. Replaces the image + mipmaps of a
+ * CanvasTexture with the compressed data from a KTX2 texture, in place.
+ * Materials that already reference the texture pick up the new data
+ * automatically because we set needsUpdate = true.
+ *
+ * This works because THREE.Texture's .image and .mipmaps fields are what
+ * the WebGL renderer actually uploads to the GPU — the CanvasTexture vs
+ * CompressedTexture class distinction is just metadata. By copying the
+ * compressed mipmaps into the existing texture and flagging it as
+ * compressed, we get the GPU memory win without rebuilding materials.
+ *
+ * @param {THREE.Texture} target - the existing canvas texture to upgrade
+ * @param {THREE.CompressedTexture} ktx2 - the loaded KTX2 texture
+ */
+function _swapToKTX2(target, ktx2) {
+  // Preserve wrapping/anisotropy/colorSpace settings from the original.
+  const wrapS = target.wrapS;
+  const wrapT = target.wrapT;
+  const anisotropy = target.anisotropy;
+  const colorSpace = target.colorSpace;
+  const repeat = target.repeat.clone();
+
+  // Swap image + mipmaps (the actual data the GPU uploads).
+  target.image = ktx2.image;
+  target.mipmaps = ktx2.mipmaps;
+  target.isCompressedTexture = true;
+  target.format = ktx2.format;
+  target.generateMipmaps = false;
+
+  // Restore settings (KTX2 load may have set different defaults).
+  target.wrapS = wrapS;
+  target.wrapT = wrapT;
+  target.anisotropy = anisotropy;
+  target.colorSpace = colorSpace;
+  target.repeat.copy(repeat);
+
+  // Force re-upload on next render.
+  target.needsUpdate = true;
+  target.version++;
+  console.log('[PBRTextures] Upgraded texture to KTX2 compressed');
+}
+
+/**
+ * Phase D4 — Kick off an async KTX2 upgrade for a texture.
+ * Non-blocking; silently no-ops if the .ktx2 file is missing or unsupported.
+ */
+function _tryKTX2Upgrade(target, ktx2Path) {
+  // Capture current state synchronously, then attempt the async load.
+  // Even if the upgrade succeeds later, the texture was already usable
+  // from the moment the getter returned the canvas version.
+  loadKTX2(ktx2Path, null).then((ktx2) => {
+    if (ktx2) _swapToKTX2(target, ktx2);
+  }).catch(() => { /* silent fallback — canvas texture already in use */ });
+}
 
 export function getAsphaltTexture(size = 512) {
   const key = `asphalt_${size}`;
@@ -78,6 +152,12 @@ export function getAsphaltTexture(size = 512) {
   const roughTex = new THREE.CanvasTexture(rc);
   roughTex.wrapS = roughTex.wrapT = THREE.RepeatWrapping;
 
+  // Phase D4 — Opportunistic KTX2 upgrade for both color and roughness maps.
+  // If /textures/asphalt_color.ktx2 / asphalt_roughness.ktx2 exist on disk,
+  // they will replace the canvas images async without disrupting the running game.
+  _tryKTX2Upgrade(tex, '/textures/asphalt_color.ktx2');
+  _tryKTX2Upgrade(roughTex, '/textures/asphalt_roughness.ktx2');
+
   _cache[key] = { map: tex, roughnessMap: roughTex };
   return _cache[key];
 }
@@ -113,8 +193,12 @@ export function getConcreteTexture(size = 256) {
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+
+  // Phase D4 — Opportunistic KTX2 upgrade.
+  _tryKTX2Upgrade(tex, '/textures/concrete.ktx2');
+
   _cache[key] = tex;
-  return tex;
+  return _cache[key];
 }
 
 export function getGlassTexture(size = 128) {
@@ -144,6 +228,10 @@ export function getGlassTexture(size = 128) {
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+
+  // Phase D4 — Opportunistic KTX2 upgrade.
+  _tryKTX2Upgrade(tex, '/textures/glass.ktx2');
+
   _cache[key] = tex;
-  return tex;
+  return _cache[key];
 }
