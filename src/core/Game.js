@@ -31,6 +31,7 @@ import { StuntSystem } from '../systems/StuntSystem.js';
 import { MissionSystem } from '../systems/MissionSystem.js';
 import { DistanceCuller } from '../systems/DistanceCuller.js';
 import { LODManager } from '../systems/LODManager.js';
+import { DistrictStreamer } from '../systems/DistrictStreamer.js';
 import { CharacterCustomizer } from '../systems/CharacterCustomizer.js';
 import { HousesSystem } from '../systems/HousesSystem.js';
 import { BusinessesSystem } from '../systems/BusinessesSystem.js';
@@ -170,6 +171,23 @@ export class Game {
 
     // === LOD Manager (distance-based detail reduction) ===
     this.lodManager = new LODManager({ camera: this.camera, updateInterval: 0.5 });
+    // Phase D1 — Buildings are now wrapped in THREE.LOD by World._addBuilding.
+    // Register them so lod.update(camera) is called every frame for level switching.
+    for (const b of this.world.buildings) {
+      if (b.isLOD) this.lodManager.registerNativeLOD(b);
+    }
+
+    // === Phase D6 — District streaming ===
+    // Coarse district-level cull that hides entire districts the player can't see.
+    // Keeps current district + 1 adjacent on each side resident; hides the rest.
+    // Pairs with DistanceCuller (fine-grained per-mesh) and LODManager (per-building level swap)
+    // to form a 3-tier culling pipeline: district → mesh → LOD level.
+    this.districtStreamer = new DistrictStreamer({
+      worldRoot: this.world.root,
+      districts: this.world.districts,
+      residentRadius: 1,    // current + 1 on each side = 3 districts resident max
+      updateInterval: 1.0   // re-evaluate once per second (cheap, district changes are rare)
+    });
 
     // === Phase 4 Systems ===
     this.economy = new EconomySystem({ hud: this.hud });
@@ -426,6 +444,9 @@ export class Game {
     this.districtDeco.update(dt, this.environment.isNight ? 1 : 0);
     this.reflectionMgr.update(dt);
     this.cameraRig.update(dt);
+    // Phase D6 — district streaming runs BEFORE distance culler so the culler
+    // doesn't waste cycles checking hidden districts' meshes.
+    this.districtStreamer.update(dt, targetPos);
     this.distanceCuller.update(dt);
     this.lodManager.update(dt);
 

@@ -74,27 +74,48 @@ export class World {
   }
 
   _addBuilding(x, z, w, h, d, mat, options = {}) {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-    mesh.position.set(x, h / 2, z);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    if (options.rotation) mesh.rotation.y = options.rotation;
-    this.root.add(mesh);
-    this.buildings.push(mesh);
+    // Phase D1 — THREE.LOD wrapper: high-detail (box + windows + roof) near,
+    // low-detail (box only) far. Cuts window-plane triangle count (~288/building)
+    // at distance while keeping the same silhouette and shadow shape.
+    //
+    // Camera collision (CameraRig uses raycaster.intersectObjects(arr, true))
+    // still works because LOD extends Object3D and the raycaster recurses into
+    // the active child. DistanceCuller also still works because setting
+    // lod.visible = false hides the entire LOD subtree.
+
+    // High-detail mesh: box + windows + roof equipment
+    const highMesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    highMesh.position.set(0, h / 2, 0); // local — LOD container is positioned below
+    highMesh.castShadow = true;
+    highMesh.receiveShadow = true;
+    if (options.rotation) highMesh.rotation.y = options.rotation;
+    if (options.windows !== false && h > 10) this._addBuildingWindows(highMesh, w, h, d);
+    if (h > 15 && Math.random() < 0.7) this._addRoofDetails(highMesh, w, h, d);
+
+    // Low-detail mesh: just the box, no window/roof children.
+    // Shares the SAME geometry instance as highMesh to avoid doubling GPU memory.
+    // castShadow off — distant buildings contribute little to scene shadows and
+    // skipping their shadow render saves draw-call cost.
+    const lowMesh = new THREE.Mesh(highMesh.geometry, mat);
+    lowMesh.position.set(0, h / 2, 0);
+    lowMesh.castShadow = false;
+    lowMesh.receiveShadow = true;
+    if (options.rotation) lowMesh.rotation.y = options.rotation;
+
+    // LOD container — switches level based on camera distance.
+    // Level distances chosen to fit between the existing LODManager mid/far
+    // thresholds (50/150) and the DistanceCuller drawDistance (200-350).
+    const lod = new THREE.LOD();
+    lod.position.set(x, 0, z);
+    lod.addLevel(highMesh, 0);
+    lod.addLevel(lowMesh, 80); // beyond 80 units, drop windows + roof details
+
+    this.root.add(lod);
+    this.buildings.push(lod);
     this._addBoxCollider(x, h / 2, z, w / 2, h / 2, d / 2,
       options.rotation ? { x: 0, y: Math.sin(options.rotation / 2), z: 0, w: Math.cos(options.rotation / 2) } : null);
 
-    // Add window interior lights (emissive) for night time
-    if (options.windows !== false && h > 10) {
-      this._addBuildingWindows(mesh, w, h, d);
-    }
-
-    // Add roof equipment (AC units, vents)
-    if (h > 15 && Math.random() < 0.7) {
-      this._addRoofDetails(mesh, w, h, d);
-    }
-
-    return mesh;
+    return lod;
   }
 
   _addBuildingWindows(mesh, w, h, d) {

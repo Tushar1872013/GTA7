@@ -10,17 +10,26 @@
  * Uses kinematic bodies (no full physics) — cars are not driven into by player
  * physics for Phase 1 (collisions are visual only). Phase 2+ can upgrade.
  *
- * Phase D2 — Shared geometries: previously each _makeCarMesh() call created
- * brand-new BoxGeometry/CylinderGeometry instances. With ~20 traffic cars ×
- * 10+ meshes per car, that's 200+ geometry objects and 200+ shader variants
- * for what is structurally the same shape. Now all cars share the same
- * geometry instances via TrafficSystem._SHARED_GEO. Each car still owns its
- * own material (so colors stay unique), but geometries are referenced, not
- * cloned. This cuts GPU memory and shader-compilation cost significantly.
+ * Rendering strategy (Phase D2 → InstancedMesh upgrade):
+ *   - All car BODIES and UPPER meshes are drawn via TWO shared InstancedMeshes
+ *     (one for body, one for upper). Each InstancedMesh holds `count` instances,
+ *     one per car. Per-instance color comes from setColorAt(), so each car
+ *     keeps its unique paint color while the entire fleet renders in 2 draw
+ *     calls instead of `2 * count` draw calls (e.g. 20 cars = 2 draw calls
+ *     instead of 40).
+ *   - Smaller parts (cabin glass, interior, chrome bumpers, wheels, hubs,
+ *     headlights, taillights, indicators) stay as regular Meshes inside the
+ *     per-car Group because they need independent materials (emissive lights,
+ *     transparent glass, blink-animated indicators) and the headlight is a
+ *     PointLight that must live in the scene graph.
+ *   - Shared geometries (TrafficSystem._SHARED_GEO) are referenced, not cloned.
+ *   - Per-frame, _syncInstancedMeshes() derives each instance's world matrix
+ *     from the car Group's position + heading. Cars are children of this.root
+ *     (identity transform), so car.matrix IS its world matrix.
  *
- * True InstancedMesh is still the eventual goal for the body mesh itself
- * (single draw call for all car bodies), but requires per-instance color
- * attribute work — sequenced as a follow-up after this geometry-sharing win.
+ * The clearcoat paint look (Phase B1) is preserved by using MeshPhysicalMaterial
+ * on the shared InstancedMesh material — Three.js correctly multiplies the
+ * per-instance color into MeshPhysicalMaterial's diffuse channel.
  */
 import * as THREE from 'three';
 
@@ -62,7 +71,89 @@ export class TrafficSystem {
 
     this._carColors = [0xd32f2f, 0x1976d2, 0x388e3c, 0xfbc02d, 0x7b1fa2, 0x212121, 0xfafafa, 0xff6f00];
 
+    // Pre-allocate InstancedMesh capacity to match the requested car count.
+    // Capacity is fixed at construction time — traffic density does not change
+    // dynamically in this game.
+    this._capacity = count;
+
     for (let i = 0; i < count; i++) this._spawnCar();
+
+    // Phase D2 — Now build the two InstancedMeshes (body + upper) that will
+    // draw all car bodies/upper meshes in 2 draw calls total instead of 2*count.
+    this._initBodyInstancedMesh();
+  }
+
+  /**
+   * Phase D2 — Build the two InstancedMeshes for body and upper meshes.
+   * Both share a single MeshPhysicalMaterial with white base color; per-instance
+   * color is provided via setColorAt() so each car keeps its unique paint color.
+   */
+  _initBodyInstancedMesh() {
+    if (this._capacity === 0) return;
+    const G = TrafficSystem._getSharedGeo();
+
+    // Shared paint material. White base color because per-instance color
+    // multiplies into the diffuse channel — if the base was anything other
+    // than white, the per-instance tint would be color-shifted.
+    // Clearcoat preserved from Phase B1 for the GTA "wet paint" look.
+    const sharedBodyMat = new THREE.MeshPhysicalMaterial({
+      color: 0xffffff,
+      metalness: 0.7,
+      roughness: 0.25,
+      clearcoat: 0.8,
+      clearcoatRoughness: 0.15,
+      envMapIntensity: 1.0
+    });
+
+    this._bodyInst = new THREE.InstancedMesh(G.body, sharedBodyMat, this._capacity);
+    this._bodyInst.castShadow = true;
+    this._bodyInst.frustumCulled = false; // instances span the whole world; default bounding sphere is wrong
+    this._bodyInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.root.add(this._bodyInst);
+
+    this._upperInst = new THREE.InstancedMesh(G.upper, sharedBodyMat, this._capacity);
+    this._upperInst.castShadow = true;
+    this._upperInst.frustumCulled = false;
+    this._upperInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.root.add(this._upperInst);
+
+    // Per-instance colors — set once at construction; traffic colors don't change.
+    const tmpColor = new THREE.Color();
+    for (let i = 0; i < this.cars.length; i++) {
+      tmpColor.setHex(this.cars[i].userData.bodyColor);
+      this._bodyInst.setColorAt(i, tmpColor);
+      this._upperInst.setColorAt(i, tmpColor);
+    }
+    if (this._bodyInst.instanceColor) this._bodyInst.instanceColor.needsUpdate = true;
+    if (this._upperInst.instanceColor) this._upperInst.instanceColor.needsUpdate = true;
+
+    // Initial matrix sync so the InstancedMesh isn't empty on the first frame.
+    this._syncInstancedMeshes();
+  }
+
+  /**
+   * Phase D2 — Per-frame: derive each instance's world matrix from the car's
+   * position + heading. Body local position is (0, 0.45, 0) and upper local
+   * position is (0, 0.9, 0); car position.y is 0.5, so body world y = 0.95
+   * and upper world y = 1.4. Cars are children of this.root (identity transform),
+   * so car.position IS its world position.
+   */
+  _syncInstancedMeshes() {
+    if (!this._bodyInst) return;
+    const m = new THREE.Matrix4();
+    for (let i = 0; i < this.cars.length; i++) {
+      const car = this.cars[i];
+      const heading = car.rotation.y;
+      // Body: rotation.y = heading, position offset (0, 0.45, 0) from car origin
+      m.makeRotationY(heading);
+      m.setPosition(car.position.x, car.position.y + 0.45, car.position.z);
+      this._bodyInst.setMatrixAt(i, m);
+      // Upper: same rotation, position offset (0, 0.9, 0) from car origin
+      m.setPosition(car.position.x, car.position.y + 0.9, car.position.z);
+      this._upperInst.setMatrixAt(i, m);
+    }
+    this._bodyInst.instanceMatrix.needsUpdate = true;
+    this._upperInst.instanceMatrix.needsUpdate = true;
   }
 
   _spawnCar() {
@@ -84,18 +175,12 @@ export class TrafficSystem {
   }
 
   _makeCarMesh() {
-    const colors = [0xd32f2f, 0x1976d2, 0x388e3c, 0xfbc02d, 0x7b1fa2, 0x212121, 0xfafafa, 0xff6f00];
+    // Pick this car's paint color and stash it in userData for the InstancedMesh setup.
     const color = this._carColors[Math.floor(Math.random() * this._carColors.length)];
-    // Phase B1 — MeshPhysicalMaterial with clearcoat for the GTA-style layered paint look.
-    // Phase D2 — Material is per-car (so colors stay unique) but geometries are shared.
-    const bodyMat = new THREE.MeshPhysicalMaterial({
-      color,
-      metalness: 0.7,
-      roughness: 0.25,
-      clearcoat: 0.8,
-      clearcoatRoughness: 0.15,
-      envMapIntensity: 1.0
-    });
+
+    // Per-car materials for the non-instanced parts (glass, lights, chrome, etc.).
+    // The body + upper meshes are NO LONGER created here — they're drawn by the
+    // shared InstancedMeshes (_bodyInst + _upperInst) built in _initBodyInstancedMesh().
     const glassMat = new THREE.MeshStandardMaterial({ color: 0x111820, metalness: 0.9, roughness: 0.05, transparent: true, opacity: 0.7 });
     const darkMat = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.85 });
     const chromeMat = new THREE.MeshStandardMaterial({ color: 0xcfd8dc, metalness: 0.98, roughness: 0.1 });
@@ -106,12 +191,8 @@ export class TrafficSystem {
 
     const G = TrafficSystem._getSharedGeo();
     const g = new THREE.Group();
-    // Lower body
-    const body = new THREE.Mesh(G.body, bodyMat);
-    body.position.y = 0.45; body.castShadow = true;
-    // Upper body (hood/trunk level)
-    const upper = new THREE.Mesh(G.upper, bodyMat);
-    upper.position.y = 0.9;
+    // NOTE: body and upper are intentionally NOT created here — they are drawn by
+    // the shared InstancedMeshes. This removes 2 draw calls per car.
     // Cabin (glass)
     const cabin = new THREE.Mesh(G.cabin, glassMat);
     cabin.position.set(0, 1.2, -0.1);
@@ -146,7 +227,8 @@ export class TrafficSystem {
     const indL = new THREE.Mesh(G.ind, indicatorMat.clone()); indL.position.set(-0.9, 0.6, 2.1);
     const indR = new THREE.Mesh(G.ind, indicatorMat.clone()); indR.position.set(0.9, 0.6, 2.1);
 
-    g.add(body, upper, cabin, interior, bumperF, bumperR, headL, headR, tailL, tailR, indL, indR);
+    g.add(cabin, interior, bumperF, bumperR, headL, headR, tailL, tailR, indL, indR);
+    g.userData.bodyColor = color;
     g.userData.taillightMat = tailMat;
 
     // Headlight (point light) — brightened at night
@@ -203,5 +285,12 @@ export class TrafficSystem {
       ud.taillightMat.emissiveIntensity = ud.brake ? 2.0 : 0.5;
       ud.headlight.intensity = isNight ? 1.0 : 0.0;
     }
+
+    // Phase D2 — Sync the body/upper InstancedMeshes after all car positions
+    // have been updated. This is the per-frame cost of instanced rendering:
+    // one matrix compose per car per InstancedMesh, plus a single buffer upload.
+    // For 20 cars × 2 InstancedMeshes = 40 matrix compositions per frame,
+    // which is negligible vs. the 40 draw calls saved.
+    this._syncInstancedMeshes();
   }
 }
