@@ -33,7 +33,17 @@ export class Car extends Vehicle {
     const isSports = v.name === 'Sports';
     const isSUV = v.name === 'SUV';
     const color = isSports ? 0xd32f2f : isSUV ? 0x2e7d32 : 0x1976d2;
-    const bodyMat = new THREE.MeshStandardMaterial({ color, metalness: 0.6, roughness: 0.35 });
+    // Phase B1 — MeshPhysicalMaterial with clearcoat gives the layered "wet paint" look
+    // that GTA vehicle paint uses. Clearcoat is a glossy transparent layer over the
+    // base color; without it MeshStandardMaterial looks flat compared to real car paint.
+    const bodyMat = new THREE.MeshPhysicalMaterial({
+      color,
+      metalness: 0.6,
+      roughness: 0.35,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.1,
+      envMapIntensity: 1.2
+    });
     const glassMat = new THREE.MeshStandardMaterial({ color: 0x222a33, metalness: 0.7, roughness: 0.15 });
     const darkMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 });
     const chromeMat = new THREE.MeshStandardMaterial({ color: 0xcfd8dc, metalness: 0.95, roughness: 0.15 });

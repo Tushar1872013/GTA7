@@ -18,8 +18,16 @@ export class Bike extends Vehicle {
   _buildMesh() {
     const v = this.variants[this.variant];
     const frameColor = v.name === 'Sport' ? 0xe53935 : v.name === 'Cruiser' ? 0x1a1a2e : 0x2e7d32;
-    // PBR materials — realistic paint with clearcoat feel
-    const matFrame = new THREE.MeshStandardMaterial({ color: frameColor, metalness: 0.8, roughness: 0.25 });
+    // Phase B1 — MeshPhysicalMaterial with clearcoat for the layered "wet paint" look.
+    // Bike tanks/fenders in real life have a clear lacquer over the color, same as car paint.
+    const matFrame = new THREE.MeshPhysicalMaterial({
+      color: frameColor,
+      metalness: 0.8,
+      roughness: 0.25,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.15,
+      envMapIntensity: 1.2
+    });
     const matDark  = new THREE.MeshStandardMaterial({ color: 0x141414, metalness: 0.7, roughness: 0.4 });
     const matChrome= new THREE.MeshStandardMaterial({ color: 0xcfd8dc, metalness: 0.98, roughness: 0.08 });
     const matGlass = new THREE.MeshStandardMaterial({ color: 0x4fc3f7, metalness: 0.9, roughness: 0.05, emissive: 0x1a3a5a, emissiveIntensity: 0.5 });

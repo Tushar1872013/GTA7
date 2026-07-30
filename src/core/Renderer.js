@@ -33,7 +33,8 @@ export class Renderer {
     this.renderer = new THREE.WebGLRenderer({
       antialias: false, // we use FXAA in post-processing
       powerPreference: 'high-performance',
-      stencil: false
+      stencil: false,   // no stencil buffer effects in this game — saves memory bandwidth
+      depth: true,      // Phase A5 — explicit (true is the default, but pinned for clarity)
     });
 
     // PBR + tone mapping

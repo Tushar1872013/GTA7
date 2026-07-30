@@ -125,21 +125,29 @@ export class Environment {
     this.scene.add(this.sky);
 
     // === Sun ===
+    // Phase B3 — Tightened shadow frustum (was ±140, now ±80) so the same 2048×2048
+    // shadow map covers a smaller play area = sharper shadows near the player.
+    // Combined with setShadowTarget() (called from Game._update every frame), this
+    // is effectively a lightweight single-cascade shadow system: the shadow frustum
+    // follows the player instead of trying to cover the whole map from a fixed origin.
     this.sun = new THREE.DirectionalLight(0xffffff, 2.0);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
     this.sun.shadow.camera.near = 1;
     this.sun.shadow.camera.far = 350;
-    const s = 140;
+    const s = 80;
     this.sun.shadow.camera.left = -s;
     this.sun.shadow.camera.right = s;
     this.sun.shadow.camera.top = s;
     this.sun.shadow.camera.bottom = -s;
-    this.sun.shadow.bias = -0.0002;
+    this.sun.shadow.bias = -0.0005;
     this.sun.shadow.normalBias = 0.04;
-    this.sun.shadow.radius = 6; // soft edges
+    this.sun.shadow.radius = 4; // soft edges
     this.scene.add(this.sun);
     this.scene.add(this.sun.target);
+
+    // Track last shadow target so we can compute the delta to apply to sun.position
+    this._shadowTarget = new THREE.Vector3(0, 0, 0);
 
     // === Ambient (cool fill) ===
     this.ambient = new THREE.AmbientLight(0x3a5070, 0.35);
@@ -233,6 +241,25 @@ export class Environment {
   setTimeOfDay(t) { this.timeOfDay = ((t % 1) + 1) % 1; }
   get isNight() { return this.timeOfDay < 0.22 || this.timeOfDay > 0.80; }
 
+  /**
+   * Phase B3 — Recenter the sun shadow frustum on the player.
+   * Call this every frame from Game._update with the player/vehicle position.
+   *
+   * This keeps the 2048×2048 shadow map (now covering ±80 units instead of ±140)
+   * centered on wherever the player actually is, so shadow detail stays crisp
+   * across the whole open world instead of degrading as the player walks away
+   * from the world origin.
+   *
+   * The sun's DIRECTION (from sky perspective) is preserved — update() applies
+   * _shadowTarget as an x/z offset to both sun.position and sun.target, so the
+   * lighting angle is unchanged, only which patch of ground the shadow frustum
+   * covers moves with the player.
+   */
+  setShadowTarget(pos) {
+    if (!pos) return;
+    this._shadowTarget.set(pos.x, 0, pos.z);
+  }
+
   _getPhase() {
     const t = this.timeOfDay;
     if (t < 0.18) return 'preDawn';
@@ -261,8 +288,15 @@ export class Environment {
     const dist = 400;
     this._sunPos.set(sunAz * dist, sunH * dist, 0.3 * dist);
     this.sky.material.uniforms['sunPosition'].value.copy(this._sunPos);
-    this.sun.position.copy(this._sunPos);
-    this.sun.target.position.set(0, 0, 0);
+    // Phase B3 — preserve the player-follow offset on x/z; only y/azimuth come from the sun arc.
+    // The sun's x/z position is _sunPos.x/z PLUS the current shadow-target offset (so the
+    // shadow frustum stays centered on the player as time-of-day rotates the sun).
+    this.sun.position.set(
+      this._sunPos.x + this._shadowTarget.x,
+      this._sunPos.y,
+      this._sunPos.z + this._shadowTarget.z
+    );
+    this.sun.target.position.set(this._shadowTarget.x, 0, this._shadowTarget.z);
     this.moon.position.set(-this._sunPos.x, -this._sunPos.y, -this._sunPos.z);
 
     // Apply palette

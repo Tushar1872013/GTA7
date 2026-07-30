@@ -410,6 +410,10 @@ export class Game {
 
     this._checkCollisionsWithTraffic();
 
+    // Phase B3 — Recenter sun shadow frustum on the player every frame.
+    // Must run BEFORE environment.update(dt), because update() reads _shadowTarget
+    // when computing sun.position / sun.target.position.
+    this.environment.setShadowTarget(targetPos);
     this.environment.update(dt);
     this.weather.update(dt, targetPos);
     this.wind.update(dt);
