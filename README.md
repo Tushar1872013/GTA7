@@ -112,14 +112,14 @@ npm run preview  # http://localhost:4173
 
 ```
 src/
-├── core/           Game loop, renderer, camera
-├── physics/        Physics world wrapper
-├── environment/    Sky, sun, day/night cycle
-├── world/          7-district world generator
-├── player/         Player character + controls
-├── vehicles/       Vehicle base, Bike, Car (with variants)
-├── traffic/        AI traffic cars
-├── systems/        All gameplay systems (Phase 3-5)
+├── core/           Game loop, Renderer (post-processing pipeline), Camera
+├── physics/        PhysicsWorld (kinematic) + physics-worker.js + PhysicsWorkerClient (dynamic, off-thread)
+├── environment/    Sky, sun, day/night, ReflectionManager (PMREM), DistrictLUTs (color grading)
+├── world/          7-district world generator, RoadSystem (merged markings), PBRTextures (KTX2-ready)
+├── player/         Player character + Controls + KTX2TextureLoader
+├── vehicles/       Vehicle base, Bike, Car (MeshPhysicalMaterial clearcoat paint)
+├── traffic/        AI traffic (InstancedMesh bodies, shared geometry pool)
+├── systems/        DistanceCuller, LODManager, DistrictStreamer + all gameplay systems
 ├── ui/             HUD
 └── main.js         Entry point
 
@@ -129,8 +129,50 @@ server/
 
 ## Performance
 
-- InstancedMesh for roads, lane markings, runway dashes
-- Distance culling (buildings hidden beyond 200-350m based on quality)
-- Adaptive quality (auto-downgrades if FPS < 35)
-- Kinematic physics bodies (no solver jitter)
-- 60 FPS target on mid-range hardware
+### 3-tier culling pipeline
+1. **District streaming** (`src/systems/DistrictStreamer.js`) — coarse district-level cull. Keeps current district + 1 adjacent on each side resident (3 of 7 max), hides the rest. Re-evaluates at 1 Hz.
+2. **Distance culler** (`src/systems/DistanceCuller.js`) — per-mesh cull beyond drawDistance (200–350m based on quality). Re-evaluates at 5 Hz.
+3. **LOD manager** (`src/systems/LODManager.js`) — per-building level swap. Native `THREE.LOD` objects update every frame; legacy detail-part pattern updates at 2 Hz.
+
+### Draw-call reductions
+- **Traffic InstancedMesh** — all car bodies + upper meshes drawn via 2 shared `InstancedMesh`es (one per part) with per-instance color. 20 cars = 2 draw calls instead of 40.
+- **Road markings merged** — yellow center dashes, white lane divider dashes, and crosswalk stripes are buffered during road build, then flushed as one merged mesh per material via `BufferGeometryUtils.mergeGeometries()`. ~1500 individual meshes collapsed to 3.
+- **Shared geometry pool** — all traffic cars reference a single set of `BoxGeometry`/`CylinderGeometry`/`SphereGeometry` instances instead of allocating their own.
+
+### Rendering pipeline (post-processing)
+```
+RenderPass → SSAO → Bloom → FXAA → OutputPass → LUTPass → Vignette → FilmPass
+```
+- **ACES Filmic tone mapping** + sRGB color space (Phase A)
+- **PCF Soft shadows** with player-following sun frustum (±80 units, recentered every frame — lightweight single-cascade system)
+- **Bloom** — subtle, high-threshold (only neon/headlights/sun bloom)
+- **SSAO** — subtle ambient occlusion (high/ultra quality only)
+- **Per-district color-grade LUT** (`src/environment/DistrictLUTs.js`) — 7 procedurally-generated 16³ LUTs, one per district mood (Desert=warm sandy, Dubai=luxury teal, Tokyo=neon magenta-cyan, Mountain=misty desaturated, Village=golden hour, etc.). Switches automatically when crossing district boundaries at 60% intensity.
+- **Vignette** — subtle cinematic edge darkening (display space)
+- **Film grain** — barely-visible noise masks banding in sky/bloom gradients
+
+### Materials
+- **MeshPhysicalMaterial with clearcoat** on all vehicle paint (Car, Bike, Traffic) for the GTA-style layered "wet paint" look
+- **PMREM environment map** from the Sky shader, refreshed every 5 seconds, applied to all PBR materials with metalness > 0
+
+### Texture compression (Phase D4)
+- **KTX2 opportunistic upgrade** — `src/player/KTX2TextureLoader.js` attempts to load `.ktx2` compressed textures for asphalt/concrete/glass. Falls back to procedurally-generated CanvasTextures if KTX2 is unavailable or files are missing.
+- Drop `.ktx2` files into `/textures/` (e.g. `asphalt_color.ktx2`, `concrete.ktx2`, `glass.ktx2`) to enable. Convert PNGs via `toktx --bcmp --genmipmap output.ktx2 input.png`.
+- 70% smaller GPU memory than uncompressed — disproportionately important for mid-range Android VRAM headroom.
+
+### Physics worker (Phase D5)
+- **`src/physics/physics-worker.js`** — Web Worker owning its own `CANNON.World` for off-thread dynamic body simulation.
+- **`src/physics/PhysicsWorkerClient.js`** — main-thread async client with promise-based API.
+- Current codebase uses kinematic bodies (player, vehicles, traffic) which stay on the main thread. The worker is **infrastructure for future dynamic bodies** (ragdolls, debris, physics props) — they'll automatically run off-thread via `this.physicsWorker.addDynamicBody(...)`.
+- All world static colliders are mirrored into the worker at init time so dynamic bodies will collide with buildings correctly.
+
+### Quality presets
+| Tier | Pixel ratio | Shadows | Bloom | SSAO | LUT | Vignette | Film |
+|------|-------------|---------|-------|------|-----|----------|------|
+| Low  | ≤0.75       | off     | off   | off  | off | off      | off  |
+| Medium | ≤1.0      | on      | subtle| off  | on  | on       | off  |
+| High | ≤1.5        | on      | on    | on   | on  | on       | subtle|
+| Ultra| ≤2.0        | on      | stronger| on | on  | on       | on   |
+
+- **Adaptive quality** — auto-downgrades if FPS < 35 for 3+ seconds.
+- **60 FPS target** on mid-range hardware; playable on mid/low-end Android.
