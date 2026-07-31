@@ -20,8 +20,8 @@
  *   - Smaller parts (cabin glass, interior, chrome bumpers, wheels, hubs,
  *     headlights, taillights, indicators) stay as regular Meshes inside the
  *     per-car Group because they need independent materials (emissive lights,
- *     transparent glass, blink-animated indicators) and the headlight is a
- *     PointLight that must live in the scene graph.
+ *     transparent glass, blink-animated indicators). Actual headlight
+ *     illumination is capped by a small pooled PointLight budget.
  *   - Shared geometries (TrafficSystem._SHARED_GEO) are referenced, not cloned.
  *   - Per-frame, _syncInstancedMeshes() derives each instance's world matrix
  *     from the car Group's position + heading. Cars are children of this.root
@@ -60,13 +60,23 @@ TrafficSystem._getSharedGeo = function () {
 export class TrafficSystem {
   constructor({ scene, city, count = 12 }) {
     this.scene = scene;
-    this.city = city; // can be City (legacy) or World
+    this.city = city; // World road provider
     this.cars = [];
     this.root = new THREE.Group();
     this.root.name = 'Traffic';
     scene.add(this.root);
 
-    // Bound for wrapping — World uses 1500, City uses halfWorld
+    // Keep emissive meshes on every car, but cap real-time lights to the nearest cars.
+    this._headlightBudget = 4;
+    this._headlightPool = [];
+    for (let i = 0; i < this._headlightBudget; i++) {
+      const light = new THREE.PointLight(0xfff4d6, 0.0, 14, 2);
+      light.visible = false;
+      this.root.add(light);
+      this._headlightPool.push(light);
+    }
+
+    // Bound for wrapping — World uses 1500
     this._bound = city.halfWorld || 1500;
 
     this._carColors = [0xd32f2f, 0x1976d2, 0x388e3c, 0xfbc02d, 0x7b1fa2, 0x212121, 0xfafafa, 0xff6f00];
@@ -224,18 +234,12 @@ export class TrafficSystem {
     tailL.position.set(-0.65, 0.7, -2.1);
     const tailR = tailL.clone(); tailR.position.x = 0.65;
     // Indicators
-    const indL = new THREE.Mesh(G.ind, indicatorMat.clone()); indL.position.set(-0.9, 0.6, 2.1);
-    const indR = new THREE.Mesh(G.ind, indicatorMat.clone()); indR.position.set(0.9, 0.6, 2.1);
+    const indL = new THREE.Mesh(G.ind, indicatorMat); indL.position.set(-0.9, 0.6, 2.1);
+    const indR = new THREE.Mesh(G.ind, indicatorMat); indR.position.set(0.9, 0.6, 2.1);
 
     g.add(cabin, interior, bumperF, bumperR, headL, headR, tailL, tailR, indL, indR);
     g.userData.bodyColor = color;
     g.userData.taillightMat = tailMat;
-
-    // Headlight (point light) — brightened at night
-    const pl = new THREE.PointLight(0xfff4d6, 0.0, 14, 2);
-    pl.position.set(0, 0.6, 2.2);
-    g.add(pl);
-    g.userData.headlight = pl;
     g.userData.indMats = [indL.material, indR.material];
     return g;
   }
@@ -283,14 +287,48 @@ export class TrafficSystem {
 
       // Lights
       ud.taillightMat.emissiveIntensity = ud.brake ? 2.0 : 0.5;
-      ud.headlight.intensity = isNight ? 1.0 : 0.0;
     }
+
+    this._updateHeadlightPool(playerPos, isNight);
 
     // Phase D2 — Sync the body/upper InstancedMeshes after all car positions
     // have been updated. This is the per-frame cost of instanced rendering:
     // one matrix compose per car per InstancedMesh, plus a single buffer upload.
-    // For 20 cars × 2 InstancedMeshes = 40 matrix compositions per frame,
+    // For 20 cars x 2 InstancedMeshes = 40 matrix compositions per frame,
     // which is negligible vs. the 40 draw calls saved.
     this._syncInstancedMeshes();
   }
+
+  _updateHeadlightPool(playerPos, isNight) {
+    if (!isNight) {
+      for (const light of this._headlightPool) {
+        light.visible = false;
+        light.intensity = 0.0;
+      }
+      return;
+    }
+
+    const nearest = this.cars
+      .map((car) => ({ car, distSq: car.position.distanceToSquared(playerPos) }))
+      .sort((a, b) => a.distSq - b.distSq);
+
+    for (let i = 0; i < this._headlightPool.length; i++) {
+      const light = this._headlightPool[i];
+      const entry = nearest[i];
+      if (!entry) {
+        light.visible = false;
+        light.intensity = 0.0;
+        continue;
+      }
+
+      _headlightLocal.set(0, 0.6, 2.2);
+      entry.car.localToWorld(_headlightWorld.copy(_headlightLocal));
+      light.position.copy(_headlightWorld);
+      light.visible = true;
+      light.intensity = 1.0;
+    }
+  }
 }
+
+const _headlightLocal = new THREE.Vector3();
+const _headlightWorld = new THREE.Vector3();

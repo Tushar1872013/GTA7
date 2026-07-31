@@ -187,14 +187,14 @@ export class Game {
     this.cameraRig.setCollidables(this.world.getCameraCollidables());
 
     this.player = new Player({ scene: this.scene, physics: this.physics, cameraRig: this.cameraRig });
-    this.player.setColliders(this.world.colliders);
+    this.player.setColliders(this.world.colliderIndex);
 
     this.bike = new Bike({ scene: this.scene, physics: this.physics, variant: 0 });
-    this.bike.setColliders(this.world.colliders);
+    this.bike.setColliders(this.world.colliderIndex);
     this.bike.resetTo(new THREE.Vector3(-2, 0.5, 4));
 
     this.car = new Car({ scene: this.scene, physics: this.physics, variant: 0 });
-    this.car.setColliders(this.world.colliders);
+    this.car.setColliders(this.world.colliderIndex);
     this.car.resetTo(new THREE.Vector3(2, 0.5, 4));
 
     this.activeVehicle = this.bike;

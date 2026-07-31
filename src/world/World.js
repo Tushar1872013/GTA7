@@ -60,6 +60,8 @@ export class World {
     this._buildTokyo();
     this._buildMountain();
     this._buildVillage();
+
+    this.colliderIndex = new ColliderSpatialIndex(this.colliders);
   }
 
   // === Helpers ===
@@ -904,6 +906,7 @@ export class World {
 
   // === Public API ===
   getCameraCollidables() { return this.buildings; }
+  getCollisionCandidates(position, radius) { return this.colliderIndex.query(position, radius); }
 
   randomRoadPoint() {
     if (!this.roadSegments.length) return { point: new THREE.Vector3(0, 0, 0), dir: 'ew' };
@@ -939,6 +942,60 @@ export class World {
           c.material.emissiveIntensity = 0.2 + (1 - dayFactor) * 0.6;
         }
       });
+    }
+  }
+}
+
+class ColliderSpatialIndex {
+  constructor(colliders, cellSize = 80) {
+    this.cellSize = cellSize;
+    this.cells = new Map();
+
+    for (const collider of colliders) this._insert(collider);
+  }
+
+  query(position, radius = 0) {
+    const result = [];
+    const seen = new Set();
+    const minX = Math.floor((position.x - radius) / this.cellSize);
+    const maxX = Math.floor((position.x + radius) / this.cellSize);
+    const minZ = Math.floor((position.z - radius) / this.cellSize);
+    const maxZ = Math.floor((position.z + radius) / this.cellSize);
+
+    for (let ix = minX; ix <= maxX; ix++) {
+      for (let iz = minZ; iz <= maxZ; iz++) {
+        const cell = this.cells.get(`${ix},${iz}`);
+        if (!cell) continue;
+        for (const collider of cell) {
+          if (seen.has(collider)) continue;
+          seen.add(collider);
+          result.push(collider);
+        }
+      }
+    }
+
+    return result;
+  }
+
+  _insert(collider) {
+    const half = collider.shapes[0]?.halfExtents;
+    if (!half) return;
+
+    const minX = Math.floor((collider.position.x - half.x) / this.cellSize);
+    const maxX = Math.floor((collider.position.x + half.x) / this.cellSize);
+    const minZ = Math.floor((collider.position.z - half.z) / this.cellSize);
+    const maxZ = Math.floor((collider.position.z + half.z) / this.cellSize);
+
+    for (let ix = minX; ix <= maxX; ix++) {
+      for (let iz = minZ; iz <= maxZ; iz++) {
+        const key = `${ix},${iz}`;
+        let cell = this.cells.get(key);
+        if (!cell) {
+          cell = [];
+          this.cells.set(key, cell);
+        }
+        cell.push(collider);
+      }
     }
   }
 }

@@ -266,7 +266,8 @@ export class Player {
       // Building collision
       if (this._colliders) {
         const rad = this._colliderRadius;
-        for (const c of this._colliders) {
+        const colliders = this._colliders.query ? this._colliders.query(this.body.position, rad) : this._colliders;
+        for (const c of colliders) {
           const half = c.shapes[0].halfExtents;
           const cx = c.position.x, cy = c.position.y, cz = c.position.z;
           const closestX = Math.max(cx - half.x, Math.min(this.body.position.x, cx + half.x));

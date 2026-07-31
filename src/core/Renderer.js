@@ -188,6 +188,7 @@ export class Renderer {
     this.renderer.setSize(w, h);
     this.composer.setSize(w, h);
     this.bloomPass.resolution.set(w, h);
+    if (this.ssaoPass) this.ssaoPass.setSize(w, h);
     this.fxaaPass.material.uniforms['resolution'].value.set(1 / w, 1 / h);
   }
 
