@@ -515,6 +515,13 @@ export class Game {
     // Phase D6 — district streaming runs BEFORE distance culler so the culler
     // doesn't waste cycles checking hidden districts' meshes.
     this.districtStreamer.update(dt, targetPos);
+
+    // Phase C4c — Switch the per-district color-grade LUT when the player
+    // crosses a district boundary. setDistrictLUT() is a no-op if the district
+    // hasn't changed, so calling it every frame is cheap.
+    const district = this.world.getDistrictAt(targetPos);
+    if (district) this.renderer.setDistrictLUT(district.name);
+
     this.distanceCuller.update(dt);
     this.lodManager.update(dt);
 

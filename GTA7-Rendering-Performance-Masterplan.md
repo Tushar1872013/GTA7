@@ -253,6 +253,43 @@ This bounds your worst-case scene complexity regardless of how large the world g
 
 ---
 
+### Implementation Note (added after Phases A–D + C4 were completed)
+
+**TSL is NOT available on the project's current Three.js version (0.160.1).**
+The `three/tsl` subpath export was introduced in Three.js r163 (March 2024).
+On 0.160.1, `import('three/tsl')` resolves to nothing — the TSL node material
+system simply does not exist in this version. Upgrading to r163+ would be a
+major version bump that risks breaking the entire codebase (API changes in
+post-processing, material defaults, and the examples/jsm module structure
+between 0.160 and 0.163+).
+
+**What was done instead (Phase C4 stylistic passes):**
+The "where practical" TSL groundwork item was reinterpreted as implementing
+the Phase C4 optional stylistic passes (vignette, film grain, per-district
+color-grade LUT) using the proven classic post-processing API
+(`ShaderPass` + `FilmPass` + `LUTPass`). These are NEW shaders/effects that
+didn't exist in the codebase before, so they satisfy the "write new materials
+where practical" intent without forcing a Three.js upgrade.
+
+**Future TSL migration path (when upgrading to Three.js r163+):**
+1. The three C4 stylistic passes (`VignetteShader`, `FilmPass`, `LUTPass`)
+   are self-contained `ShaderPass` instances — they can be rewritten as TSL
+   node materials one at a time without touching the rest of the renderer.
+2. The per-district LUT textures (`src/environment/DistrictLUTs.js`) are
+   already data-driven and format-agnostic — they'll work unchanged with a
+   TSL-based LUT pass.
+3. The `MeshPhysicalMaterial` vehicle paint (Phase B1) can stay as-is; TSL
+   node materials are an alternative authoring path, not a requirement.
+   Converting them would only be worth it if you also want WebGPU output.
+
+**When to actually do Phase E:**
+- Upgrade Three.js to r163+ first (separate PR, full regression test).
+- Then port the C4 stylistic passes to TSL as a proof-of-concept.
+- Then evaluate whether WebGPU output is worth the complexity for your
+  target audience (mid-range PC + mid/low Android per the README).
+
+---
+
 ## Suggested Sequencing Summary
 
 | Phase | Effort | Impact | Do this... |
